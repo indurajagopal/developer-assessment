@@ -1,9 +1,14 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
+﻿using AutoMapper;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
 using System;
+using System.Collections.Generic;
 using System.Linq;
+using System.Net;
 using System.Threading.Tasks;
+using TodoList.Api.Model;
+using TodoList.Api.Model.DTO;
+using TodoList.Api.Repository.IRepository;
 
 namespace TodoList.Api.Controllers
 {
@@ -11,95 +16,140 @@ namespace TodoList.Api.Controllers
     [ApiController]
     public class TodoItemsController : ControllerBase
     {
-        private readonly TodoContext _context;
-        private readonly ILogger<TodoItemsController> _logger;
+        private readonly ITodoItemsRepository _dbTodoItems;
+        public APIResponse _apiResponse;
+        private readonly IMapper _mapper;
 
-        public TodoItemsController(TodoContext context, ILogger<TodoItemsController> logger)
+        public TodoItemsController(ITodoItemsRepository dbTodoItems, IMapper mapper)
         {
-            _context = context;
-            _logger = logger;
+            _dbTodoItems = dbTodoItems;
+            _mapper = mapper;
+            this._apiResponse = new APIResponse();
         }
 
         // GET: api/TodoItems
         [HttpGet]
-        public async Task<IActionResult> GetTodoItems()
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        public async Task<ActionResult<APIResponse>> GetCompletedTodoItems()
         {
-            var results = await _context.TodoItems.Where(x => !x.IsCompleted).ToListAsync();
-            return Ok(results);
+            try
+            {
+                var toDoLists = await _dbTodoItems.GetAllCompltedTodoItems();
+                _apiResponse.Result = _mapper.Map<List<TodoItemDTO>>(toDoLists).Where(x => !x.IsCompleted).ToList(); 
+                _apiResponse.StatusCode = HttpStatusCode.OK;
+                return Ok(_apiResponse);
+            }
+            catch (Exception ex)
+            {
+                _apiResponse.IsSuccess = false;
+                _apiResponse.ErrorMessage = new List<string>() { ex.ToString() };
+                return _apiResponse;
+            }
         }
 
         // GET: api/TodoItems/...
-        [HttpGet("{id}")]
-        public async Task<IActionResult> GetTodoItem(Guid id)
+        [HttpGet("{id}",Name ="GetToDoItem")]
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<ActionResult<APIResponse>> GetTodoItem(Guid id)
         {
-            var result = await _context.TodoItems.FindAsync(id);
-
-            if (result == null)
+            try
             {
-                return NotFound();
-            }
+                if (id == Guid.Empty)
+                {
+                    _apiResponse.StatusCode = System.Net.HttpStatusCode.BadRequest;
+                    return _apiResponse;
+                }
+                var result = await _dbTodoItems.GetTodoItem(u=>u.Id == id);
 
-            return Ok(result);
+                if (result == null)
+                {
+                    _apiResponse.StatusCode = HttpStatusCode.NotFound;
+                    return _apiResponse;
+                }
+                _apiResponse.Result= _mapper.Map<TodoItemDTO>(result);
+                _apiResponse.StatusCode=HttpStatusCode.OK;
+                return Ok(_apiResponse);
+            }
+            catch (Exception ex)
+            {
+                _apiResponse.IsSuccess = false;
+                _apiResponse.ErrorMessage = new List<string>() { ex.ToString() };
+                return _apiResponse;
+            }
         }
 
         // PUT: api/TodoItems/... 
         [HttpPut("{id}")]
-        public async Task<IActionResult> PutTodoItem(Guid id, TodoItem todoItem)
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status204NoContent)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status404NotFound)]
+        public async Task<ActionResult<APIResponse>> UpdateTodoItem(Guid id, TodoItemDTO todoItemDTO)
         {
-            if (id != todoItem.Id)
+            if (id != todoItemDTO.Id || todoItemDTO == null)
             {
-                return BadRequest();
+                _apiResponse.StatusCode = HttpStatusCode.BadRequest;
+                return _apiResponse;
+            }
+            if (await _dbTodoItems.GetAsync(u => u.Id == todoItemDTO.Id) == null)
+            {
+                _apiResponse.StatusCode = HttpStatusCode.NotFound;
+                return _apiResponse;
+            }
+             try
+            {
+                TodoItem todoItem = _mapper.Map<TodoItem>(todoItemDTO);
+                await _dbTodoItems.UpdateTodoItem(todoItem);
+                _apiResponse.StatusCode = HttpStatusCode.NoContent;
+                return Ok(_apiResponse);
+            }
+            catch (Exception ex)
+            {
+                _apiResponse.IsSuccess = false;
+                _apiResponse.ErrorMessage = new List<string>() { ex.ToString() };
+                return _apiResponse;
             }
 
-            _context.Entry(todoItem).State = EntityState.Modified;
-
-            try
-            {
-                await _context.SaveChangesAsync();
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                if (!TodoItemIdExists(id))
-                {
-                    return NotFound();
-                }
-                else
-                {
-                    throw;
-                }
-            }
-
-            return NoContent();
-        } 
+        }
 
         // POST: api/TodoItems 
         [HttpPost]
-        public async Task<IActionResult> PostTodoItem(TodoItem todoItem)
+        [ProducesResponseType(StatusCodes.Status200OK)]
+        [ProducesResponseType(StatusCodes.Status204NoContent)]
+        [ProducesResponseType(StatusCodes.Status201Created)]
+        [ProducesResponseType(StatusCodes.Status400BadRequest)]
+        [ProducesResponseType(StatusCodes.Status500InternalServerError)]
+        public async Task<ActionResult<APIResponse>> CreateTodoItem(TodoItemDTO todoItemDTO)
         {
-            if (string.IsNullOrEmpty(todoItem?.Description))
+            if (todoItemDTO == null)
+            {
+                return BadRequest();
+            }
+            if (await _dbTodoItems.GetAsync(u => u.Id == todoItemDTO.Id) != null)
+            {
+                ModelState.AddModelError("customError", "Todo Item already exists!");
+                return BadRequest();
+            }
+            if (string.IsNullOrEmpty(todoItemDTO?.Description))
             {
                 return BadRequest("Description is required");
             }
-            else if (TodoItemDescriptionExists(todoItem.Description))
+            try
             {
-                return BadRequest("Description already exists");
-            } 
-
-            _context.TodoItems.Add(todoItem);
-            await _context.SaveChangesAsync();
-             
-            return CreatedAtAction(nameof(GetTodoItem), new { id = todoItem.Id }, todoItem);
-        } 
-
-        private bool TodoItemIdExists(Guid id)
-        {
-            return _context.TodoItems.Any(x => x.Id == id);
+                TodoItem todoItem = _mapper.Map<TodoItem>(todoItemDTO);
+                await _dbTodoItems.CreateTodoItem(todoItem);
+                _apiResponse.StatusCode = HttpStatusCode.NoContent;
+                return Ok(_apiResponse);
+            }
+            catch (Exception ex)
+            {
+                _apiResponse.IsSuccess = false;
+                _apiResponse.ErrorMessage = new List<string>() { ex.ToString() };
+                return _apiResponse;
+            }
         }
 
-        private bool TodoItemDescriptionExists(string description)
-        {
-            return _context.TodoItems
-                   .Any(x => x.Description.ToLowerInvariant() == description.ToLowerInvariant() && !x.IsCompleted);
-        }
     }
 }
